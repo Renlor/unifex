@@ -74,23 +74,35 @@ defmodule Unifex.CodeGenerator.BaseTypes.Struct do
 
     @impl true
     def generate_arg_parse(arg, var_name, ctx) do
-      %{postproc_fun: postproc_fun, generator: generator} = ctx
+      %{generator: generator} = ctx
 
       unique_suffix = Unifex.CodeGenerator.Utils.sanitize_var_name("#{var_name}")
 
+      # Use identity postproc for inner field parses; the struct
+      # wraps each parse internally so the whole expression yields
+      # a single success indicator (NIF: 1 = ok, 0 = fail). This
+      # makes the struct safe to nest inside Optional / Vector /
+      # Variant, which pass identity postproc themselves.
       fields_parsing =
         ctx.type_spec.fields
         |> Enum.map_join("\n", fn {field_name, field_type} ->
+          inner =
+            BaseType.generate_arg_parse(
+              field_type,
+              :"#{var_name}.#{field_name}",
+              ~g<value_#{unique_suffix}>,
+              & &1,
+              generator,
+              ctx
+            )
+
           ~g"""
           key_#{unique_suffix} = enif_make_atom(env, "#{field_name}");
           int get_#{field_name}_result = enif_get_map_value(env, #{arg}, key_#{unique_suffix}, &value_#{unique_suffix});
           if (get_#{field_name}_result) {
-            #{BaseType.generate_arg_parse(field_type,
-          :"#{var_name}.#{field_name}",
-          ~g<value_#{unique_suffix}>,
-          postproc_fun,
-          generator,
-          ctx)}
+            if (!(#{inner})) {
+              get_#{field_name}_result = 0;
+            }
           }
           """
         end)
@@ -143,19 +155,31 @@ defmodule Unifex.CodeGenerator.BaseTypes.Struct do
 
     @impl true
     def generate_arg_parse(arg, var_name, ctx) do
-      %{postproc_fun: postproc_fun, generator: generator} = ctx
+      %{generator: generator} = ctx
 
+      # Use identity postproc for inner field parses; the struct
+      # wraps each parse internally so the whole expression yields
+      # a single success indicator (CNode: 0 = ok, nonzero = fail).
+      # This makes the struct safe to nest inside Optional / Vector
+      # / Variant, which pass identity postproc themselves.
       fields_parsing =
         ctx.type_spec.fields
         |> Enum.map(fn {field_name, field_type} ->
+          inner =
+            BaseType.generate_arg_parse(
+              field_type,
+              :"#{var_name}.#{field_name}",
+              arg,
+              & &1,
+              generator,
+              ctx
+            )
+
           ~g"""
           if (strcmp(key, "#{field_name}") == 0) {
-            #{BaseType.generate_arg_parse(field_type,
-          :"#{var_name}.#{field_name}",
-          arg,
-          postproc_fun,
-          generator,
-          ctx)}
+            if ((#{inner}) != 0) {
+              struct_r = -1;
+            }
           }
           """
         end)
@@ -163,12 +187,9 @@ defmodule Unifex.CodeGenerator.BaseTypes.Struct do
           ~g"""
           if (strcmp(key, "__struct__") == 0) {
             char* elixir_module_name;
-            #{BaseType.generate_arg_parse(:atom,
-          :elixir_module_name,
-          arg,
-          postproc_fun,
-          generator,
-          ctx)}
+            if ((#{BaseType.generate_arg_parse(:atom, :elixir_module_name, arg, & &1, generator, ctx)}) != 0) {
+              struct_r = -1;
+            }
             #{BaseType.generate_destruction(:atom, :elixir_module_name, generator, ctx)}
           }
           """
@@ -177,19 +198,24 @@ defmodule Unifex.CodeGenerator.BaseTypes.Struct do
 
       ~g"""
       ({
+        int struct_r = 0;
         int arity = 0;
         int decode_map_header_result = ei_decode_map_header(#{arg}->buff, #{arg}->index, &arity);
-        if (decode_map_header_result == 0) {
-          for (int i = 0; i < arity; ++i) {
+        if (decode_map_header_result != 0) {
+          struct_r = decode_map_header_result;
+        } else {
+          for (int i = 0; i < arity && struct_r == 0; ++i) {
             char key[MAXATOMLEN + 1];
             int decode_key_result = ei_decode_atom(#{arg}->buff, #{arg}->index, key);
-            if (decode_key_result == 0) {
+            if (decode_key_result != 0) {
+              struct_r = decode_key_result;
+            } else {
               #{fields_parsing}
             }
           }
         }
 
-        decode_map_header_result;
+        struct_r;
       })
       """
     end
