@@ -296,8 +296,21 @@ defmodule Unifex.Specs.DSL do
     struct_fields =
       struct_fields
       |> Enum.map(fn
-        {name, {type, _meta, _args}} -> {name, type}
-        {name, [{type, _meta, _args}]} -> {name, {:list, type}}
+        # Function-form parameterized type: vector(f32), optional(str),
+        # array(small_struct), etc. Inner is a single atom-shaped
+        # subtype expression. Captured as a {type, subtype} tuple so
+        # base_type.ex's call/5 sets ctx.subtype before dispatching.
+        {name, {type, _meta, [{sub, _, sctx}]}}
+        when is_atom(sub) and (is_atom(sctx) or is_nil(sctx)) ->
+          {name, {type, sub}}
+
+        # Bare type or zero-arg call form: f32, str, etc.
+        {name, {type, _meta, _args}} ->
+          {name, type}
+
+        # List-of-T literal: [f32], [str], etc.
+        {name, [{type, _meta, _args}]} ->
+          {name, {:list, type}}
       end)
 
     {struct_alias, struct_module_name, struct_fields}
@@ -312,6 +325,12 @@ defmodule Unifex.Specs.DSL do
 
         [{name, _meta, _args}] ->
           {name, {:list, name}}
+
+        # Function-form parameterized type: name :: vector(f32), etc.
+        # See parse_struct above for the matching rationale.
+        {:"::", _meta1, [{name, _meta2, _args1}, {type, _meta3, [{sub, _, sctx}]}]}
+        when is_atom(sub) and (is_atom(sctx) or is_nil(sctx)) ->
+          {name, {type, sub}}
 
         {:"::", _meta1, [{name, _meta2, _args1}, {type, _meta3, _args2}]} ->
           {name, type}

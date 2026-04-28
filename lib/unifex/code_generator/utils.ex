@@ -59,6 +59,19 @@ defmodule Unifex.CodeGenerator.Utils do
     {serializers.arg_serializer.(:atom, :"\"#{name}\""), label: name}
   end
 
+  # Function-form parameterized type in a result position:
+  # `value :: vector(f32)`, `issues :: vector(str)`, etc. Captured
+  # as a {type, subtype} tuple so base_type.ex's call/5 sets
+  # ctx.subtype before dispatching to the umbrella module.
+  def generate_serialization(
+        {:"::", _meta, [{name, _meta2, _args}, {type, _meta3, [{sub, _, sctx}]}]},
+        serializers
+      )
+      when is_atom(sub) and (is_atom(sctx) or is_nil(sctx)) do
+    full_type = {type, sub}
+    {serializers.arg_serializer.(full_type, name), arg: {name, full_type}}
+  end
+
   def generate_serialization(
         {:"::", _meta, [{name, _meta2, _args}, {type, _meta3, _args2}]},
         serializers
