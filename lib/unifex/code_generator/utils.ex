@@ -60,15 +60,16 @@ defmodule Unifex.CodeGenerator.Utils do
   end
 
   # Function-form parameterized type in a result position:
-  # `value :: vector(f32)`, `issues :: vector(str)`, etc. Captured
-  # as a {type, subtype} tuple so base_type.ex's call/5 sets
-  # ctx.subtype before dispatching to the umbrella module.
+  # `value :: vector(f32)`, `value :: vector(optional(i32))`, etc.
+  # Recurses through arbitrary nesting via Specs.DSL.parse_type_ast/1
+  # so the dispatcher sees a properly nested {type, subtype} tuple
+  # and unpacks one layer per call.
   def generate_serialization(
-        {:"::", _meta, [{name, _meta2, _args}, {type, _meta3, [{sub, _, sctx}]}]},
+        {:"::", _meta, [{name, _meta2, _args}, {type, _meta3, [inner_ast]}]},
         serializers
       )
-      when is_atom(sub) and (is_atom(sctx) or is_nil(sctx)) do
-    full_type = {type, sub}
+      when is_atom(type) do
+    full_type = {type, Unifex.Specs.DSL.parse_type_ast(inner_ast)}
     {serializers.arg_serializer.(full_type, name), arg: {name, full_type}}
   end
 

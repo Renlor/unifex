@@ -296,21 +296,20 @@ defmodule Unifex.Specs.DSL do
     struct_fields =
       struct_fields
       |> Enum.map(fn
-        # Function-form parameterized type: vector(f32), optional(str),
-        # array(small_struct), etc. Inner is a single atom-shaped
-        # subtype expression. Captured as a {type, subtype} tuple so
-        # base_type.ex's call/5 sets ctx.subtype before dispatching.
-        {name, {type, _meta, [{sub, _, sctx}]}}
-        when is_atom(sub) and (is_atom(sctx) or is_nil(sctx)) ->
-          {name, {type, sub}}
-
-        # Bare type or zero-arg call form: f32, str, etc.
-        {name, {type, _meta, _args}} ->
-          {name, type}
-
-        # List-of-T literal: [f32], [str], etc.
+        # List-of-T literal: [f32], [str], etc. Handled here because
+        # parse_type_ast/1 has its own list arm but the field value
+        # is the whole `[{type, _, _}]` list literal, not a typed AST.
         {name, [{type, _meta, _args}]} ->
           {name, {:list, type}}
+
+        # Bare atom, zero-arg call form, or function-form
+        # parameterized type (possibly nested). parse_type_ast/1
+        # recurses through arbitrary nesting so deep compositions
+        # like vector(vector(optional(i32))) parse to nested
+        # {type, subtype} tuples that base_type.ex's call/5 unpacks
+        # one layer per dispatch.
+        {name, type_ast} ->
+          {name, parse_type_ast(type_ast)}
       end)
 
     {struct_alias, struct_module_name, struct_fields}
@@ -326,14 +325,12 @@ defmodule Unifex.Specs.DSL do
         [{name, _meta, _args}] ->
           {name, {:list, name}}
 
-        # Function-form parameterized type: name :: vector(f32), etc.
-        # See parse_struct above for the matching rationale.
-        {:"::", _meta1, [{name, _meta2, _args1}, {type, _meta3, [{sub, _, sctx}]}]}
-        when is_atom(sub) and (is_atom(sctx) or is_nil(sctx)) ->
-          {name, {type, sub}}
-
-        {:"::", _meta1, [{name, _meta2, _args1}, {type, _meta3, _args2}]} ->
-          {name, type}
+        # name :: type_expr, where type_expr may be a bare atom or
+        # an arbitrarily-nested function-form parameterized type
+        # (vector(f32), vector(optional(i32)), etc.). parse_type_ast/1
+        # handles all forms.
+        {:"::", _meta1, [{name, _meta2, _args1}, type_ast]} ->
+          {name, parse_type_ast(type_ast)}
 
         {name, _meta, _args} ->
           {name, name}
@@ -341,6 +338,29 @@ defmodule Unifex.Specs.DSL do
 
     results = parse_function_results_traverse_helper(results)
     {fun_name, args, results}
+  end
+
+  @doc """
+  Convert a unifex type AST into the `{type, subtype}` / atom shape the
+  code generator dispatcher expects. Recurses through arbitrarily-
+  nested function-form parameterized types so spec authors can write
+  `vector(vector(optional(i32)))` and have it parse to
+  `{:vector, {:vector, {:optional, :i32}}}`. base_type.ex's `call/5`
+  unpacks one layer per dispatch, so nested tuples thread through
+  umbrella modules naturally without codegen changes.
+  """
+  @spec parse_type_ast(Macro.t()) :: atom | {atom, term}
+  def parse_type_ast({atom, _meta, ctx})
+      when is_atom(atom) and (is_atom(ctx) or is_nil(ctx)) do
+    atom
+  end
+
+  def parse_type_ast({type, _meta, [inner_ast]}) when is_atom(type) do
+    {type, parse_type_ast(inner_ast)}
+  end
+
+  def parse_type_ast([{type, _meta, _args}]) when is_atom(type) do
+    {:list, type}
   end
 
   defp parse_function_results_traverse_helper({:|, _meta, [left, right]}) do
