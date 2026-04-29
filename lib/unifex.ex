@@ -21,31 +21,45 @@ defmodule Unifex do
 
   @impl Preprocessor
   def preprocess_native(native) do
-    %Native{app: app, name: name, interface: interface, language: language} = native
-
-    {:ok, project_dir} = Bundlex.Helper.MixHelper.get_project_dir(app)
+    %Native{app: app, name: name, interface: interface, language: language, sources: sources} =
+      native
 
     generator =
       interface
       |> CodeGenerator.bundlex_interface()
       |> CodeGenerator.interface_generator()
 
-    # Spec files conventionally live under c_src/ (the same
-    # convention compile.unifex uses via Helper.get_source_dir/0).
-    # Walking the whole project root costs ~11 s on a typical Mix
-    # tree because it descends into _build/, deps/, and any other
-    # unrelated subtrees just to find a handful of *.spec.exs
-    # files. Bounding the walk to c_src/ keeps it trivial.
-    source =
-      project_dir
-      |> Path.join("c_src")
-      |> InterfaceIO.get_interfaces_specs!()
-      |> Enum.find(fn {spec_name, _dir, _specs} -> spec_name == name end)
-      |> case do
-        {_spec_name, dir, _specs} -> InterfaceIO.out_path(name, dir, generator, ".#{language}")
-        nil -> raise "Native #{inspect(name)} not found in app #{inspect(app)} specification"
+    # The spec file lives in the same directory as the
+    # user-declared sources, named `<name>.spec.exs`. Bundlex's
+    # parse_native has already resolved sources to absolute paths
+    # by this point (Path.join([src_path, src_base, source])), so
+    # the spec directory is just the dirname of any user source.
+    #
+    # Deriving from the source paths avoids a project-tree walk
+    # that previously globbed `**/?*.spec.exs` from the project
+    # root -- on a typical Mix project that descends into
+    # `_build/`, `deps/`, and any other unrelated subtrees,
+    # paying tens of thousands of stat calls to find a handful of
+    # specs. The walk's wall time scaled with project size and
+    # could hit double-digit seconds on every compile.
+    spec_dir =
+      case sources do
+        [first | _] ->
+          Path.dirname(first)
+
+        [] ->
+          raise "Native #{inspect(name)} of app #{inspect(app)}: cannot resolve spec " <>
+                  "directory because no sources were declared"
       end
 
+    spec_file = Path.join(spec_dir, "#{name}.spec.exs")
+
+    unless File.exists?(spec_file) do
+      raise "Native #{inspect(name)} of app #{inspect(app)}: spec file not found at " <>
+              "#{spec_file}. The spec is expected next to the user-declared sources."
+    end
+
+    source = InterfaceIO.out_path(name, spec_dir, generator, ".#{language}")
     %Native{native | sources: [source | native.sources]}
   end
 end
