@@ -30,8 +30,15 @@ defmodule Unifex do
       |> CodeGenerator.bundlex_interface()
       |> CodeGenerator.interface_generator()
 
+    # Spec files conventionally live under c_src/ (the same
+    # convention compile.unifex uses via Helper.get_source_dir/0).
+    # Walking the whole project root costs ~11 s on a typical Mix
+    # tree because it descends into _build/, deps/, and any other
+    # unrelated subtrees just to find a handful of *.spec.exs
+    # files. Bounding the walk to c_src/ keeps it trivial.
     source =
       project_dir
+      |> Path.join("c_src")
       |> InterfaceIO.get_interfaces_specs!()
       |> Enum.find(fn {spec_name, _dir, _specs} -> spec_name == name end)
       |> case do
